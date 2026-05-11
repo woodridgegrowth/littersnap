@@ -298,7 +298,7 @@ function ReportScreen({ profile, onSent }) {
             <span style={{ fontSize: 14, fontWeight: 600, color: "#2d6a4f" }}>Tap to take or choose photo</span>
           </button>
         )}
-        <input ref={fileRef} type="file" accept="image/*" capture="environment"
+        <input ref={fileRef} type="file" accept="image/*"
           onChange={handlePhoto} style={{ display: "none" }} />
         <p style={{ fontSize: 11, color: "#999", marginTop: 6 }}>
           Photo will be attached to the email manually after it opens.
