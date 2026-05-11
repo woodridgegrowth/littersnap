@@ -1,0 +1,612 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#1b4332">
+<title>LitterSnap — Report NYC Street Litter</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'DM Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f0f4f0; }
+  #root { max-width: 480px; margin: 0 auto; min-height: 100vh; position: relative; }
+</style>
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useRef } = React;
+
+const DSNY_EMAIL = "customerservice@dsny.nyc.gov";
+const COUNCIL_EMAIL = "District1@council.nyc.gov";
+
+const ISSUE_TYPES = [
+  { id: "litter", label: "Litter on street", icon: "\u{1F5D1}\uFE0F" },
+  { id: "dirty_gutter", label: "Dirty gutter", icon: "\u{1F6A7}" },
+  { id: "dirty_sidewalk", label: "Dirty sidewalk", icon: "\u{1F9F9}" },
+  { id: "overflowing_bin", label: "Overflowing trash can", icon: "\u{1F5D1}\uFE0F" },
+  { id: "illegal_dumping", label: "Illegal dumping", icon: "\u26A0\uFE0F" },
+  { id: "debris", label: "Debris in road", icon: "\u{1F6A8}" },
+];
+
+function getNow() {
+  const d = new Date();
+  return {
+    date: d.toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "long", day: "numeric" }),
+    time: d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true }),
+    iso: d.toISOString(),
+  };
+}
+
+function buildEmailBody(data) {
+  const issueLabels = data.issues.map(id => ISSUE_TYPES.find(t => t.id === id)?.label).filter(Boolean).join(", ");
+  return `To Whom It May Concern,
+
+I am reporting a sanitation issue at the following location:
+
+Location: ${data.location}
+Date/Time: ${data.date} at ${data.time}
+Issue Type: ${issueLabels}
+${data.notes ? `\nDetails: ${data.notes}\n` : ""}
+${data.coords ? `GPS Coordinates: ${data.coords.lat.toFixed(6)}, ${data.coords.lng.toFixed(6)}\nGoogle Maps: https://maps.google.com/?q=${data.coords.lat},${data.coords.lng}\n` : ""}
+IMPORTANT: A photo of this condition is attached to this email. Please see the attached image for documentation.
+
+This condition violates NYC sanitation code and creates an unsanitary environment for residents and pedestrians. I am requesting that DSNY dispatch an agent to inspect this location and take appropriate enforcement action.
+
+Thank you,
+${data.name || "A Concerned Resident"}
+${data.neighborhood ? data.neighborhood + ", Manhattan" : "New York, NY"}`;
+}
+
+function buildSubject(data) {
+  const issueLabels = data.issues.map(id => ISSUE_TYPES.find(t => t.id === id)?.label).filter(Boolean);
+  const primary = issueLabels[0] || "Sanitation Issue";
+  return `${primary} \u2014 ${data.location} \u2014 ${data.date}`;
+}
+
+function buildMailtoUrl(data, ccCouncil) {
+  const subject = encodeURIComponent(buildSubject(data));
+  const body = encodeURIComponent(buildEmailBody(data));
+  const cc = ccCouncil ? `&cc=${encodeURIComponent(COUNCIL_EMAIL)}` : "";
+  return `mailto:${DSNY_EMAIL}?subject=${subject}${cc}&body=${body}`;
+}
+
+// Storage
+function loadProfile() {
+  try { const r = localStorage.getItem("littersnap-profile"); return r ? JSON.parse(r) : null; }
+  catch { return null; }
+}
+function saveProfile(p) {
+  try { localStorage.setItem("littersnap-profile", JSON.stringify(p)); } catch {}
+}
+function loadLog() {
+  try { const r = localStorage.getItem("littersnap-log"); return r ? JSON.parse(r) : []; }
+  catch { return []; }
+}
+function saveLog(l) {
+  try { localStorage.setItem("littersnap-log", JSON.stringify(l)); } catch {}
+}
+
+function Header({ screen, onBack, reportCount }) {
+  return (
+    <div style={{
+      background: "linear-gradient(135deg, #1b4332 0%, #2d6a4f 50%, #40916c 100%)",
+      padding: "20px 20px 24px", color: "#fff", position: "relative", overflow: "hidden",
+    }}>
+      <div style={{ position: "absolute", top: -30, right: -30, width: 100, height: 100, borderRadius: "50%", background: "rgba(183,228,199,0.12)" }} />
+      <div style={{ position: "relative", zIndex: 1 }}>
+        {screen !== "home" && (
+          <button onClick={onBack} style={{
+            background: "rgba(255,255,255,0.1)", border: "none", color: "#fff",
+            padding: "6px 14px", borderRadius: 20, cursor: "pointer", fontSize: 13, marginBottom: 12,
+          }}>{"\u2190"} Back</button>
+        )}
+        <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 4 }}>
+          <div style={{
+            width: 42, height: 42, borderRadius: 12,
+            background: "linear-gradient(135deg, #95d5b2, #52b788)",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            fontSize: 22, boxShadow: "0 4px 15px rgba(149,213,178,0.3)",
+          }}>{"\u{1F4F8}"}</div>
+          <div>
+            <h1 style={{ margin: 0, fontSize: 20, fontWeight: 700, letterSpacing: "-0.3px" }}>LitterSnap</h1>
+            <p style={{ margin: 0, fontSize: 12, opacity: 0.7, letterSpacing: "0.5px" }}>Snap it. Send it. Clean it up.</p>
+          </div>
+        </div>
+        {screen === "home" && reportCount > 0 && (
+          <div style={{
+            marginTop: 14, padding: "8px 14px", borderRadius: 10,
+            background: "rgba(183,228,199,0.15)", border: "1px solid rgba(183,228,199,0.25)",
+            fontSize: 13, display: "flex", alignItems: "center", gap: 8,
+          }}>
+            <span style={{ fontSize: 16 }}>{"\u{1F4CA}"}</span>
+            <span><strong>{reportCount}</strong> report{reportCount !== 1 ? "s" : ""} filed from this device</span>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ReportScreen({ profile, onSent }) {
+  const [photo, setPhoto] = useState(null);
+  const [photoPreview, setPhotoPreview] = useState(null);
+  const [issues, setIssues] = useState([]);
+  const [location, setLocation] = useState("");
+  const [coords, setCoords] = useState(null);
+  const [locating, setLocating] = useState(false);
+  const [notes, setNotes] = useState("");
+  const [ccCouncil, setCcCouncil] = useState(true);
+  const [sent, setSent] = useState(false);
+  const fileRef = useRef(null);
+
+  const handlePhoto = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    setPhoto(file);
+    const reader = new FileReader();
+    reader.onload = (ev) => setPhotoPreview(ev.target.result);
+    reader.readAsDataURL(file);
+  };
+
+  const getLocation = () => {
+    if (!navigator.geolocation) return;
+    setLocating(true);
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        setCoords({ lat: pos.coords.latitude, lng: pos.coords.longitude });
+        // Reverse geocode with a simple approach
+        fetch(`https://nominatim.openstreetmap.org/reverse?lat=${pos.coords.latitude}&lon=${pos.coords.longitude}&format=json`)
+          .then(r => r.json())
+          .then(data => {
+            const road = data.address?.road || "";
+            const neighbourhood = data.address?.neighbourhood || data.address?.suburb || "";
+            const display = road ? `${road}${neighbourhood ? `, ${neighbourhood}` : ""}, NYC` : data.display_name?.split(",").slice(0, 3).join(",");
+            setLocation(display || `${pos.coords.latitude.toFixed(5)}, ${pos.coords.longitude.toFixed(5)}`);
+            setLocating(false);
+          })
+          .catch(() => {
+            setLocation(`${pos.coords.latitude.toFixed(5)}, ${pos.coords.longitude.toFixed(5)}`);
+            setLocating(false);
+          });
+      },
+      () => setLocating(false),
+      { enableHighAccuracy: true, timeout: 10000 }
+    );
+  };
+
+  const toggleIssue = (id) => setIssues(p => p.includes(id) ? p.filter(i => i !== id) : [...p, id]);
+
+  const canSend = photo && issues.length > 0 && location.trim();
+
+  const handleSend = () => {
+    if (!canSend) return;
+    const { date, time, iso } = getNow();
+    const data = {
+      name: profile?.name || "",
+      neighborhood: profile?.neighborhood || "",
+      location, coords, issues, notes, date, time,
+    };
+    window.location.href = buildMailtoUrl(data, ccCouncil);
+    onSent({ ...data, timestamp: iso });
+    setSent(true);
+  };
+
+  if (sent) {
+    return (
+      <div style={{ padding: 20 }}>
+        <div style={{
+          background: "#fff", borderRadius: 16, padding: 28, textAlign: "center",
+          boxShadow: "0 2px 12px rgba(0,0,0,0.06)",
+        }}>
+          <div style={{ fontSize: 56, marginBottom: 12 }}>{"\u2705"}</div>
+          <h2 style={{ margin: "0 0 8px", fontSize: 20, color: "#1b4332" }}>Email Opened</h2>
+          <p style={{ margin: "0 0 8px", fontSize: 14, color: "#666", lineHeight: 1.6 }}>
+            Your mail app has the complaint ready.
+          </p>
+          <div style={{
+            background: "#fff3cd", borderRadius: 10, padding: 14, marginBottom: 20,
+            border: "1px solid #ffc107", textAlign: "left",
+          }}>
+            <p style={{ margin: 0, fontSize: 13, fontWeight: 700, color: "#856404" }}>
+              {"\u{1F4CE}"} Don't forget to attach your photo before hitting Send!
+            </p>
+            <p style={{ margin: "4px 0 0", fontSize: 12, color: "#856404" }}>
+              The photo is what makes this complaint actionable.
+            </p>
+          </div>
+
+          <div style={{
+            background: "#f8f9fa", borderRadius: 12, padding: 16, marginBottom: 16,
+            textAlign: "left", border: "1px solid #eee",
+          }}>
+            <p style={{ margin: "0 0 8px", fontSize: 13, fontWeight: 700, color: "#1b4332" }}>
+              Also file on 311 for maximum impact:
+            </p>
+            <a href="https://portal.311.nyc.gov/report-problems/" target="_blank" rel="noopener noreferrer"
+              style={{
+                display: "block", padding: "10px 14px", borderRadius: 8, marginBottom: 8,
+                background: "#e8f5e9", color: "#1b4332", fontSize: 13, fontWeight: 600,
+                textDecoration: "none", textAlign: "center",
+              }}>
+              {"\u{1F3DB}\uFE0F"} NYC 311 Online {"\u2192"}
+            </a>
+            <a href="tel:311"
+              style={{
+                display: "block", padding: "10px 14px", borderRadius: 8,
+                background: "#f0fffe", color: "#1b4332", fontSize: 13, fontWeight: 600,
+                textDecoration: "none", textAlign: "center",
+              }}>
+              {"\u{1F4DE}"} Call 311
+            </a>
+          </div>
+
+          <button
+            onClick={() => { setSent(false); setPhoto(null); setPhotoPreview(null); setIssues([]); setNotes(""); setLocation(""); setCoords(null); }}
+            style={{
+              width: "100%", padding: 14, borderRadius: 12,
+              background: "#f5f5f5", border: "1px solid #ddd",
+              fontSize: 14, fontWeight: 600, color: "#666", cursor: "pointer",
+            }}>
+            {"\u2190"} Report Another Location
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ padding: "20px 20px 100px" }}>
+      {/* STEP 1: Photo */}
+      <div style={{
+        background: "#fff", borderRadius: 14, padding: 16, marginBottom: 14,
+        boxShadow: "0 2px 12px rgba(0,0,0,0.06)",
+      }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+          <span style={{
+            background: photo ? "#d4edda" : "#2d6a4f", color: photo ? "#1b4332" : "#fff",
+            width: 24, height: 24, borderRadius: "50%", display: "flex", alignItems: "center",
+            justifyContent: "center", fontSize: 12, fontWeight: 700,
+          }}>{photo ? "\u2713" : "1"}</span>
+          <span style={{ fontSize: 14, fontWeight: 700, color: "#1b4332" }}>Take a Photo</span>
+          <span style={{ fontSize: 11, color: "#d63031", fontWeight: 600, marginLeft: "auto" }}>Required</span>
+        </div>
+
+        {photoPreview ? (
+          <div style={{ position: "relative", marginBottom: 8 }}>
+            <img src={photoPreview} style={{ width: "100%", borderRadius: 10, maxHeight: 220, objectFit: "cover" }} />
+            <button onClick={() => { setPhoto(null); setPhotoPreview(null); }} style={{
+              position: "absolute", top: 8, right: 8, background: "rgba(0,0,0,0.6)",
+              color: "#fff", border: "none", borderRadius: "50%", width: 28, height: 28,
+              cursor: "pointer", fontSize: 14,
+            }}>{"\u00D7"}</button>
+          </div>
+        ) : (
+          <button onClick={() => fileRef.current?.click()} style={{
+            width: "100%", padding: "32px 16px", borderRadius: 12,
+            border: "2px dashed #95d5b2", background: "#f0faf4",
+            cursor: "pointer", display: "flex", flexDirection: "column",
+            alignItems: "center", gap: 8,
+          }}>
+            <span style={{ fontSize: 36 }}>{"\u{1F4F7}"}</span>
+            <span style={{ fontSize: 14, fontWeight: 600, color: "#2d6a4f" }}>Tap to take or choose photo</span>
+          </button>
+        )}
+        <input ref={fileRef} type="file" accept="image/*" capture="environment"
+          onChange={handlePhoto} style={{ display: "none" }} />
+        <p style={{ fontSize: 11, color: "#999", marginTop: 6 }}>
+          Photo will be attached to the email manually after it opens.
+        </p>
+      </div>
+
+      {/* STEP 2: Location */}
+      <div style={{
+        background: "#fff", borderRadius: 14, padding: 16, marginBottom: 14,
+        boxShadow: "0 2px 12px rgba(0,0,0,0.06)",
+      }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+          <span style={{
+            background: location ? "#d4edda" : "#2d6a4f", color: location ? "#1b4332" : "#fff",
+            width: 24, height: 24, borderRadius: "50%", display: "flex", alignItems: "center",
+            justifyContent: "center", fontSize: 12, fontWeight: 700,
+          }}>{location ? "\u2713" : "2"}</span>
+          <span style={{ fontSize: 14, fontWeight: 700, color: "#1b4332" }}>Location</span>
+        </div>
+
+        <button onClick={getLocation} disabled={locating} style={{
+          width: "100%", padding: "12px 16px", borderRadius: 10, marginBottom: 10,
+          background: locating ? "#e0e0e0" : "linear-gradient(135deg, #2d6a4f, #40916c)",
+          color: locating ? "#666" : "#fff", border: "none", fontSize: 14, fontWeight: 600,
+          cursor: locating ? "default" : "pointer",
+        }}>
+          {locating ? "Getting location..." : "\u{1F4CD} Use My Current Location"}
+        </button>
+
+        <div style={{ textAlign: "center", fontSize: 12, color: "#999", marginBottom: 8 }}>or type it</div>
+
+        <input value={location} onChange={(e) => setLocation(e.target.value)}
+          placeholder="e.g. Lafayette St & Spring St, SoHo"
+          style={{
+            width: "100%", padding: 12, borderRadius: 10, border: "1px solid #ddd",
+            fontSize: 14, boxSizing: "border-box", background: "#fafafa", fontFamily: "inherit",
+          }} />
+      </div>
+
+      {/* STEP 3: Issue type */}
+      <div style={{
+        background: "#fff", borderRadius: 14, padding: 16, marginBottom: 14,
+        boxShadow: "0 2px 12px rgba(0,0,0,0.06)",
+      }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+          <span style={{
+            background: issues.length > 0 ? "#d4edda" : "#2d6a4f", color: issues.length > 0 ? "#1b4332" : "#fff",
+            width: 24, height: 24, borderRadius: "50%", display: "flex", alignItems: "center",
+            justifyContent: "center", fontSize: 12, fontWeight: 700,
+          }}>{issues.length > 0 ? "\u2713" : "3"}</span>
+          <span style={{ fontSize: 14, fontWeight: 700, color: "#1b4332" }}>What's the issue?</span>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+          {ISSUE_TYPES.map((t) => {
+            const active = issues.includes(t.id);
+            return (
+              <button key={t.id} onClick={() => toggleIssue(t.id)} style={{
+                padding: "12px 10px", borderRadius: 12,
+                border: `2px solid ${active ? "#2d6a4f" : "#eee"}`,
+                background: active ? "#e8f5e9" : "#fafafa",
+                cursor: "pointer", textAlign: "left", transition: "all 0.15s",
+                display: "flex", alignItems: "center", gap: 8,
+              }}>
+                <span style={{ fontSize: 18 }}>{t.icon}</span>
+                <span style={{ fontSize: 12, fontWeight: active ? 600 : 400, color: active ? "#1b4332" : "#333" }}>
+                  {t.label}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Notes */}
+      <div style={{
+        background: "#fff", borderRadius: 14, padding: 16, marginBottom: 14,
+        boxShadow: "0 2px 12px rgba(0,0,0,0.06)",
+      }}>
+        <p style={{ fontSize: 13, fontWeight: 600, color: "#1b4332", margin: "0 0 8px" }}>
+          Additional details <span style={{ fontWeight: 400, color: "#999" }}>(optional)</span>
+        </p>
+        <textarea value={notes} onChange={(e) => setNotes(e.target.value)}
+          placeholder="e.g. This corner is always like this, getting worse over the past month"
+          rows={2} style={{
+            width: "100%", padding: 12, borderRadius: 10, border: "1px solid #e0e0e0",
+            fontSize: 13, resize: "none", fontFamily: "inherit",
+            background: "#fafafa", boxSizing: "border-box",
+          }} />
+      </div>
+
+      {/* CC toggle */}
+      <div style={{
+        background: "#fff", borderRadius: 14, padding: 14, marginBottom: 14,
+        boxShadow: "0 2px 12px rgba(0,0,0,0.06)",
+        display: "flex", alignItems: "center", justifyContent: "space-between",
+      }}>
+        <div>
+          <p style={{ margin: 0, fontSize: 13, fontWeight: 600, color: "#1b4332" }}>CC Council Member Marte</p>
+          <p style={{ margin: 0, fontSize: 11, color: "#888" }}>District 1 (SoHo, LES, FiDi, Tribeca)</p>
+        </div>
+        <button onClick={() => setCcCouncil(!ccCouncil)} style={{
+          width: 48, height: 28, borderRadius: 14, border: "none", cursor: "pointer",
+          background: ccCouncil ? "#2d6a4f" : "#ddd", position: "relative", transition: "background 0.2s",
+        }}>
+          <div style={{
+            width: 22, height: 22, borderRadius: "50%", background: "#fff",
+            position: "absolute", top: 3,
+            left: ccCouncil ? 23 : 3, transition: "left 0.2s",
+            boxShadow: "0 1px 3px rgba(0,0,0,0.2)",
+          }} />
+        </button>
+      </div>
+
+      {/* SEND BUTTON */}
+      <button onClick={handleSend} disabled={!canSend} style={{
+        width: "100%", padding: "20px 24px", borderRadius: 14,
+        background: canSend
+          ? "linear-gradient(135deg, #2d6a4f 0%, #1b4332 100%)"
+          : "#ccc",
+        color: "#fff", border: "none", fontSize: 18, fontWeight: 700,
+        cursor: canSend ? "pointer" : "default",
+        boxShadow: canSend ? "0 6px 24px rgba(45,106,79,0.35)" : "none",
+        letterSpacing: "0.3px",
+      }}>
+        {"\u{1F4E8}"} Send Report to DSNY
+      </button>
+      {!canSend && (
+        <p style={{ textAlign: "center", fontSize: 12, color: "#d63031", marginTop: 8 }}>
+          {!photo ? "Photo required" : issues.length === 0 ? "Select an issue type" : "Enter a location"}
+        </p>
+      )}
+      {canSend && (
+        <p style={{ textAlign: "center", fontSize: 12, color: "#999", marginTop: 8 }}>
+          Opens email app with complaint pre-written. Attach your photo, then hit Send.
+        </p>
+      )}
+    </div>
+  );
+}
+
+const labelStyle = { fontSize: 13, fontWeight: 600, color: "#333", display: "block", marginBottom: 6 };
+const inputStyle = {
+  width: "100%", padding: 12, borderRadius: 10, border: "1px solid #ddd",
+  fontSize: 14, marginBottom: 18, boxSizing: "border-box", background: "#fafafa", fontFamily: "inherit",
+};
+
+function Setup({ onSave, existingProfile }) {
+  const [name, setName] = useState(existingProfile?.name || "");
+  const [neighborhood, setNeighborhood] = useState(existingProfile?.neighborhood || "SoHo");
+
+  const NEIGHBORHOODS = ["SoHo","NoHo","Tribeca","LES","Chinatown","FiDi","Little Italy","Nolita","Other"];
+
+  return (
+    <div style={{ padding: "20px 20px 100px" }}>
+      <div style={{
+        background: "#fff", borderRadius: 16, padding: 24,
+        boxShadow: "0 2px 12px rgba(0,0,0,0.06)",
+      }}>
+        <span style={{ fontSize: 32 }}>{"\u{1F3D9}\uFE0F"}</span>
+        <h2 style={{ margin: "8px 0 4px", fontSize: 18, color: "#1b4332" }}>Quick Setup</h2>
+        <p style={{ margin: "0 0 20px", fontSize: 13, color: "#888" }}>
+          Optional but makes your reports faster. You can skip and report immediately.
+        </p>
+
+        <label style={labelStyle}>Your Name <span style={{ fontWeight: 400, color: "#999" }}>(optional)</span></label>
+        <input value={name} onChange={(e) => setName(e.target.value)}
+          placeholder="For signing the complaint" style={inputStyle} />
+
+        <label style={labelStyle}>Your Neighborhood</label>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 18 }}>
+          {NEIGHBORHOODS.map((n) => (
+            <button key={n} onClick={() => setNeighborhood(n)} style={{
+              padding: "8px 14px", borderRadius: 8, border: "2px solid",
+              fontSize: 13, cursor: "pointer",
+              borderColor: neighborhood === n ? "#2d6a4f" : "#e0e0e0",
+              background: neighborhood === n ? "#e8f5e9" : "#fafafa",
+              fontWeight: neighborhood === n ? 700 : 400,
+              color: neighborhood === n ? "#2d6a4f" : "#666",
+            }}>{n}</button>
+          ))}
+        </div>
+
+        <button onClick={() => onSave({ name, neighborhood })} style={{
+          width: "100%", padding: 16, borderRadius: 12,
+          background: "linear-gradient(135deg, #1b4332, #2d6a4f)",
+          color: "#fff", border: "none", fontSize: 15, fontWeight: 700,
+          cursor: "pointer", boxShadow: "0 4px 16px rgba(27,67,50,0.3)",
+        }}>
+          Save & Start Reporting
+        </button>
+
+        <button onClick={() => onSave({ name: "", neighborhood: "" })} style={{
+          width: "100%", padding: 12, marginTop: 8, borderRadius: 12,
+          background: "transparent", border: "1px solid #ddd",
+          fontSize: 13, color: "#999", cursor: "pointer",
+        }}>
+          Skip for now
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function HistoryScreen({ log }) {
+  if (log.length === 0) {
+    return (
+      <div style={{ padding: 40, textAlign: "center", color: "#999" }}>
+        <span style={{ fontSize: 48, display: "block", marginBottom: 12 }}>{"\u{1F4ED}"}</span>
+        <p style={{ fontSize: 14 }}>No reports filed yet.</p>
+      </div>
+    );
+  }
+  return (
+    <div style={{ padding: "20px 20px 100px" }}>
+      <h2 style={{ fontSize: 16, margin: "0 0 4px", color: "#1b4332" }}>Report History</h2>
+      <p style={{ fontSize: 12, color: "#999", margin: "0 0 14px" }}>{log.length} total from this device</p>
+      {log.slice().reverse().map((entry, i) => {
+        const issueLabels = (entry.issues || []).map(id => ISSUE_TYPES.find(t => t.id === id)?.label).filter(Boolean).join(", ");
+        return (
+          <div key={i} style={{
+            background: "#fff", borderRadius: 12, padding: 14, marginBottom: 10,
+            boxShadow: "0 1px 6px rgba(0,0,0,0.04)", border: "1px solid #eee",
+          }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+              <span style={{ fontSize: 13, fontWeight: 700, color: "#1b4332" }}>{entry.date}</span>
+              <span style={{
+                fontSize: 10, padding: "2px 8px", borderRadius: 6, textTransform: "uppercase",
+                background: "#e8f5e9", color: "#1b4332", fontWeight: 700, letterSpacing: "0.5px",
+              }}>DSNY</span>
+            </div>
+            <p style={{ margin: 0, fontSize: 12, color: "#666" }}>
+              {entry.time} {"\u00B7"} {entry.location}
+            </p>
+            {issueLabels && <p style={{ margin: "4px 0 0", fontSize: 11, color: "#888" }}>{issueLabels}</p>}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function NavBar({ screen, onNav }) {
+  const tabs = [
+    { id: "home", icon: "\u{1F4F8}", label: "Report" },
+    { id: "history", icon: "\u{1F4CB}", label: "History" },
+    { id: "setup", icon: "\u2699\uFE0F", label: "Settings" },
+  ];
+  return (
+    <div style={{
+      position: "fixed", bottom: 0, left: 0, right: 0,
+      background: "#fff", borderTop: "1px solid #eee",
+      display: "flex", justifyContent: "space-around",
+      padding: "8px 0 max(8px, env(safe-area-inset-bottom))",
+      boxShadow: "0 -2px 10px rgba(0,0,0,0.04)", zIndex: 100,
+    }}>
+      {tabs.map((t) => (
+        <button key={t.id} onClick={() => onNav(t.id)} style={{
+          display: "flex", flexDirection: "column", alignItems: "center", gap: 2,
+          background: "none", border: "none", cursor: "pointer", padding: "4px 16px",
+          opacity: screen === t.id ? 1 : 0.4,
+        }}>
+          <span style={{ fontSize: 20 }}>{t.icon}</span>
+          <span style={{ fontSize: 11, fontWeight: 600, color: "#333" }}>{t.label}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function App() {
+  const [screen, setScreen] = useState("home");
+  const [profile, setProfile] = useState(null);
+  const [log, setLog] = useState([]);
+  const [ready, setReady] = useState(false);
+
+  useEffect(() => {
+    setProfile(loadProfile());
+    setLog(loadLog());
+    setReady(true);
+  }, []);
+
+  const handleSaveProfile = (p) => {
+    setProfile(p);
+    saveProfile(p);
+    setScreen("home");
+  };
+
+  const handleSent = (entry) => {
+    const updated = [...log, entry];
+    setLog(updated);
+    saveLog(updated);
+  };
+
+  if (!ready) return null;
+
+  return (
+    <React.Fragment>
+      <Header screen={screen} onBack={() => setScreen("home")} reportCount={log.length} />
+      {screen === "home" && !profile && <Setup onSave={handleSaveProfile} />}
+      {screen === "home" && profile && <ReportScreen profile={profile} onSent={handleSent} />}
+      {screen === "history" && <HistoryScreen log={log} />}
+      {screen === "setup" && <Setup onSave={handleSaveProfile} existingProfile={profile} />}
+      <NavBar screen={screen} onNav={setScreen} />
+    </React.Fragment>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
